@@ -1,0 +1,264 @@
+---
+title: "Project4"
+author: "Jan Troeltsch"
+date: "25.01.2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(tidylog)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(readxl)
+library(datapasta)
+library(DBI)
+library(RSQLite)
+library(devtools)
+library(encryptr)
+library(ggmap)
+library(magrittr)
+library(visdat)
+library(infer)
+library(readr)
+library(knitr)
+library(kableExtra)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+```
+# Exercises on Swiss Cows Data
+## Part 1: Import the data
+
+With the following lines of Code we import the data from a csv file
+```{r message=FALSE, warning=FALSE}
+cows <- read_csv("data/swiss_cows_data.csv")
+```
+Here is the complete data:
+    
+```{r echo=FALSE}
+cows %>% kable() %>% 
+kable_minimal(full_width = F, position = "center")
+```
+
+## Part 2: Perform a t-test using the first 3 cows of each breed
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+cows_03 <- cows %>% filter(num <= 3)
+```
+Before doing a t-test on the data for the first 3 cows, I produced the following summary table with sample size, arithmetic mean, and standard deviation for each breed of cattle:
+    
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+cows_03_summary <- cows_03 %>% 
+  group_by(breed) %>% 
+  transmute(breed,mean(weight),median(weight),sd(weight)) %>% 
+  distinct()
+cows_03_summary%>% 
+  kable() %>% 
+  kable_minimal(full_width = F, position = "center")
+```
+Based on these results I was able to answer the first question.
+
+Then I used the t_test function from the {infer} package to get an objective comparison between the two obtained means. The result looks as follows:
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+my_test <- cows_03 %>%
+  t_test(formula = weight ~ breed, order = c("Brown_Swiss","Swiss_Red_Holstein"),conf_level = 0.95)
+my_test %>% 
+  kable() %>% 
+  kable_minimal(full_width = F, position = "center")
+```
+
+As the interval between the lower_ci and the upper_ci contains the zero value, the cows_03 data set does not provide enough evidence that Brown Swiss are heavier than Swiss Red Holstein within our desired 95% confidence level. This is also confirmed by the p-value of 0.279: having chosen a confidence level of 0.95, and the resulting p-value being higher than 0.05, we conclude that the difference between the two average weights is not statistically significant at the level of 0.05.
+
+With the following code we can visualize the steps of the t-test process
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+t_obs <- my_test %>%
+  select(statistic)
+
+cows_03 %>%
+  specify(formula = weight ~ breed) %>%
+  hypothesize(null = 'independence') %>%
+  calculate(stat = "t") %>%
+  visualise(method = "theoretical") +
+  shade_p_value(obs_stat = t_obs, direction = "both") +
+  theme_minimal()
+```
+
+The area of the red region under the density curve corresponds to the p-value of 0.279
+
+## Part 3: Perform a t-test using only the first cow of each breed
+
+Performing a t-test on just the data of the first cow of each breed does give an error, as there is not enough data. Here is the error message:
+```{r echo=FALSE, error=TRUE, message=FALSE, warning=TRUE}
+cows_01 <- cows %>% filter(num <= 1)
+
+my_test <- cows_01 %>%
+  t_test(formula = weight ~ breed, order = c("Brown_Swiss","Swiss_Red_Holstein"),conf_level = 0.95)
+```
+
+## Part 4: Perform a t-test using all the cows of each breed
+
+Here is the result of the t-test on the data of all the cows:
+```{r echo=FALSE}
+my_test <- cows %>%
+  t_test(formula = weight ~ breed, order = c("Brown_Swiss","Swiss_Red_Holstein"),conf_level = 0.95) 
+my_test %>%
+  kable() %>% 
+  kable_minimal(full_width = F, position = "center")
+```
+
+And here is the density graph:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+cows %>%
+  specify(formula = weight ~ breed) %>%
+  hypothesize(null = 'independence') %>%
+  calculate(stat = "t") %>%
+  visualise(method = "theoretical") +
+  shade_p_value(obs_stat = t_obs, direction = "both") +
+  theme_minimal()
+```
+
+### Conclusion
+The confidence interval [lower_ci = 42 ; upper_ci = 69] does not contain the zero value. The cows data set provides therefore enough evidence that Brown Swiss are heavier than Swiss Red Holstein.
+The p-value is 0 and therefore it is 100% certain the differences in weight depending on breed are  statistically significant.
+
+------
+# Exercises on Fitness Club data
+
+## Part 5: Import the data
+Import in R the data from files fitness_members.csv and fitness_tracking.csv.
+With the following lines of Code we import the data from a csv file
+```{r message=FALSE, warning=FALSE}
+fitness_members <- read_csv("data/fitness_members.csv")
+fitness_tracking <- read_csv("data/fitness_tracking.csv")
+```
+Here are the first 10 rows of the fitness_members data:
+
+```{r echo=FALSE}
+fitness_members %>% 
+  filter(id <="000010") %>% 
+  kable() %>% 
+kable_minimal(full_width = F, position = "center")
+
+```
+Here are the first 10 rows of the fitness_tracking data:
+```{r echo=FALSE}
+fitness_tracking %>% 
+  filter(id <="000010") %>% 
+  kable() %>% 
+kable_minimal(full_width = F, position = "center")
+
+```
+
+## Part 6: t-test
+
+In order to perform a T-Test to answer the question whether we observe a different evolution of BMI from week 0 to week 12 in the different fitness club membership categories, I need to first transform the data.
+```{r include=FALSE}
+fitness_members <- fitness_members %>% 
+  mutate(BMI=weight/((height/100)*(height/100)))
+
+fitness_tracking_long <- fitness_tracking %>% 
+  full_join(fitness_members, by = c("id")) %>% 
+  rename(wk_000=weight) %>% 
+  select(id,starts_with("wk_")) %>% 
+  
+  pivot_longer(cols = c(starts_with("wk_")),
+               names_to = "week",
+               values_to = "weight") %>% 
+  filter(!is.na(weight))
+
+fitness_tracking_long <- fitness_tracking_long %>%
+  left_join(fitness_members,by=c("id")) %>% 
+  select(id,week,weight.x,height) %>% 
+  rename(weight=weight.x) %>% 
+  mutate(BMI=round(weight/((height/100)*(height/100)),digits=1),wk=as.numeric(substr(week,4,6))) %>% 
+  select(id,wk,weight,BMI) %>% 
+  arrange(id,wk) %>% 
+  mutate(BMI_percent_change_vs_prev_week=((BMI/lag(BMI))-1)*100)
+  
+fitness_tracking_long_wk12 <- fitness_tracking_long %>% 
+  filter(wk==12) %>% 
+  transmute(id,BMI_wk12 = BMI)
+
+fitness_members_bmi_evo_wk0_to_wk12 <- fitness_members %>% 
+  left_join(fitness_tracking_long_wk12, by=c("id")) %>% 
+  mutate(BMI_evo = BMI_wk12/BMI-1) %>% 
+  filter(!is.na(BMI_wk12))
+```
+### Economy vs Balance
+The t-test for comparing the catergories Economy and Balance does show a statistically significant difference in BMI reduction, but as the lower ci and uper ci are insignificantly low, this statistical difference is practically not relevant.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+my_test_eco_vs_bal <- fitness_members_bmi_evo_wk0_to_wk12 %>%
+  filter(m_category!="Premium") %>% 
+  t_test(formula = BMI_evo ~ m_category, order = c("Economy","Balance"),conf_level = 0.99) 
+my_test_eco_vs_bal %>%
+  kable() %>% 
+  kable_minimal(full_width = F, position = "center")
+```
+
+### Balance vs Premium
+The t-test for comparing the catergories Balance and Premium does show a statistically significant difference in BMI reduction, but as the lower ci and uper ci are insignificantly low, this statistical difference is practically not relevant.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+my_test_bal_vs_prem <- fitness_members_bmi_evo_wk0_to_wk12 %>%
+  filter(m_category!="Economy") %>% 
+  t_test(formula = BMI_evo ~ m_category, order = c("Balance","Premium"),conf_level = 0.99) 
+my_test_bal_vs_prem %>%
+  kable() %>% 
+  kable_minimal(full_width = F, position = "center")
+```
+
+### Economy vs Premium
+The t-test for comparing the catergories Economy and Premium does show a statistically significant difference in BMI reduction, but as the lower ci and uper ci are insignificantly low, this statistical difference is practically not relevant.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+my_test_eco_vs_prem <- fitness_members_bmi_evo_wk0_to_wk12 %>%
+  filter(m_category!="Balance") %>% 
+  t_test(formula = BMI_evo ~ m_category, order = c("Economy","Premium"),conf_level = 0.99) 
+my_test_eco_vs_prem %>%
+  kable() %>% 
+  kable_minimal(full_width = F, position = "center")
+```
+
+## Part 7: Chi-squared test
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fitness_members <-  fitness_members %>%
+  mutate(m_category = factor(m_category, levels = c("Economy", "Balance", "Premium")))
+```
+
+I used the chisq_test() function of the {infer} package to test the independence of member category and gender. Here is the result:
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+chi_test <- chisq_test(fitness_members,formula = m_category ~ gender)
+chi_test %>% 
+  kable() %>% 
+  kable_minimal(full_width = F, position = "center")
+```
+As the p-value is 'large' we can conclude that member category and gender are rather independent.
+
+
+## Part 8:  Visualise p-value
+
+I visualised the p-value with the following code:
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+fitness_members %>%
+  specify(formula = m_category ~ gender) %>%
+  hypothesize(null = 'independence') %>%
+  calculate(stat = "Chisq") %>%
+  visualise(method = "theoretical") +
+  shade_p_value(obs_stat = t_obs, direction = "right") +
+  theme_minimal()
+```
+
+The red shaded area shows the p-value.
+
+
+***
+End of Report
